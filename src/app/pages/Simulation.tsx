@@ -7,18 +7,34 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Input } from '../components/ui/input';
 import { Progress } from '../components/ui/progress';
 import { toast } from 'sonner';
-import { PlayCircle, StopCircle, Pause, SkipForward, AlertTriangle, TrendingUp, TrendingDown } from 'lucide-react';
+import { PlayCircle, StopCircle, Pause, AlertTriangle } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts';
+import { runPeriodSimulation, getAverageDeliveryTimeDays, getLatestFlightUtilization, getLatestStorageUtilization } from '../simulation/simulationEngine';
+import type { SimulationPeriod } from '../simulation/simulationTypes';
 
 type SimulationType = 'realtime' | 'period' | 'collapse';
 type SimulationStatus = 'idle' | 'running' | 'paused' | 'completed';
+
+type SimulationChartData = {
+  day: number;
+  date: string;
+  delivered: number;
+  delayed: number;
+  inTransit: number;
+  waiting: number;
+  storageUsed: number;
+  storageCapacity: number;
+  flightUsed: number;
+  flightCapacity: number;
+};
 
 export function Simulation() {
   const [simulationType, setSimulationType] = useState<SimulationType>('period');
   const [periodDays, setPeriodDays] = useState<string>('5');
   const [status, setStatus] = useState<SimulationStatus>('idle');
   const [progress, setProgress] = useState(0);
-  const [simulationData, setSimulationData] = useState<any[]>([]);
+  const [startDate, setStartDate] = useState('2026-04-01');
+  const [simulationData, setSimulationData] = useState<SimulationChartData[]>([]);
   const [metrics, setMetrics] = useState({
     totalLuggage: 0,
     delivered: 0,
@@ -29,102 +45,75 @@ export function Simulation() {
   });
 
   const handleStartSimulation = () => {
-    setStatus('running');
-    setProgress(0);
-    setSimulationData([]);
-    
-    toast.info('Iniciando simulación...', {
-      description: `Tipo: ${
-        simulationType === 'realtime' ? 'Tiempo Real' :
-        simulationType === 'period' ? `Período (${periodDays} días)` :
-        'Hasta Colapso'
-      }`,
-    });
-
-    // Simulate data generation
-    const interval = setInterval(() => {
-      setProgress(prev => {
-        const newProgress = prev + 5;
-        
-        if (newProgress >= 100) {
-          clearInterval(interval);
-          setStatus('completed');
-          generateFinalResults();
-          toast.success('Simulación completada', {
-            description: 'Resultados disponibles para análisis',
-          });
-          return 100;
-        }
-        
-        // Generate incremental data
-        if (newProgress % 10 === 0) {
-          addSimulationDataPoint(newProgress / 10);
-        }
-        
-        return newProgress;
-      });
-    }, 300); // Faster simulation for demo
-  };
-
-  const addSimulationDataPoint = (day: number) => {
-    const baseLoad = 150;
-    const variance = Math.random() * 50;
-    
-    let newDataPoint;
-    if (simulationType === 'collapse') {
-      // Exponential growth for collapse simulation
-      const growthFactor = 1 + (day * 0.15);
-      newDataPoint = {
-        day,
-        luggage: Math.floor(baseLoad * growthFactor + variance),
-        delivered: Math.floor(baseLoad * growthFactor * 0.7),
-        delayed: Math.floor(baseLoad * growthFactor * 0.2),
-        inTransit: Math.floor(baseLoad * growthFactor * 0.1),
-        storageCapacity: 800,
-        storageUsed: Math.min(800, Math.floor(300 + day * 40)),
-        flightCapacity: 2000,
-        flightUsed: Math.floor(1200 + day * 80),
-      };
-    } else {
-      // Normal operations
-      newDataPoint = {
-        day,
-        luggage: Math.floor(baseLoad + variance),
-        delivered: Math.floor((baseLoad + variance) * 0.85),
-        delayed: Math.floor((baseLoad + variance) * 0.08),
-        inTransit: Math.floor((baseLoad + variance) * 0.07),
-        storageCapacity: 800,
-        storageUsed: Math.floor(300 + Math.random() * 100),
-        flightCapacity: 2000,
-        flightUsed: Math.floor(1200 + Math.random() * 300),
-      };
+    if (simulationType !== 'period') {
+      toast.error('Por ahora solo implementaremos correctamente la simulación de período');
+      return;
     }
 
-    setSimulationData(prev => [...prev, newDataPoint]);
-  };
+    setStatus('running');
+    setProgress(20);
+    setSimulationData([]);
 
-  const generateFinalResults = () => {
-    const days = parseInt(periodDays);
-    const totalLuggage = 150 * days + Math.floor(Math.random() * 100);
-    
-    if (simulationType === 'collapse') {
-      setMetrics({
-        totalLuggage: totalLuggage * 2,
-        delivered: Math.floor(totalLuggage * 0.45),
-        delayed: Math.floor(totalLuggage * 0.40),
-        averageDeliveryTime: 3.5,
-        storageUtilization: 98,
-        flightUtilization: 95,
+    toast.info('Iniciando simulación de período...', {
+      description: `${periodDays} días desde ${startDate}`,
+    });
+
+    try {
+      const result = runPeriodSimulation({
+        startDate: new Date(startDate).toISOString(),
+        periodDays: Number(periodDays) as SimulationPeriod,
       });
-    } else {
-      setMetrics({
-        totalLuggage,
-        delivered: Math.floor(totalLuggage * 0.92),
-        delayed: Math.floor(totalLuggage * 0.05),
-        averageDeliveryTime: 1.3,
-        storageUtilization: 65,
-        flightUtilization: 78,
+
+      setProgress(70);
+
+      const chartData: SimulationChartData[] = result.snapshots.map((snapshot) => {
+        const storageUsed = Object.values(snapshot.airportStorage).reduce((sum, value) => sum + value, 0);
+        const storageCapacity = 10500; // suma fija de capacidades mock
+        const flightUsed = Object.values(snapshot.flightUsage).reduce((sum, value) => sum + value, 0);
+        const flightCapacity = 6100; // suma fija aproximada de capacidades mock
+
+        return {
+          day: snapshot.day,
+          date: snapshot.date,
+          delivered: snapshot.delivered,
+          delayed: snapshot.delayed,
+          inTransit: snapshot.inTransit,
+          waiting: snapshot.waiting,
+          storageUsed,
+          storageCapacity,
+          flightUsed,
+          flightCapacity,
+        };
       });
+
+      setSimulationData(chartData);
+
+      const totalProcessed =
+        result.totalDelivered +
+        result.totalDelayed +
+        result.totalInTransit +
+        result.totalWaiting;
+
+      setMetrics({
+        totalLuggage: totalProcessed,
+        delivered: result.totalDelivered,
+        delayed: result.totalDelayed,
+        averageDeliveryTime: getAverageDeliveryTimeDays(result),
+        storageUtilization: getLatestStorageUtilization(result),
+        flightUtilization: getLatestFlightUtilization(result),
+      });
+
+      setProgress(100);
+      setStatus('completed');
+
+      toast.success('Simulación completada', {
+        description: 'Resultados generados correctamente',
+      });
+    } catch (error) {
+      console.error(error);
+      setStatus('idle');
+      setProgress(0);
+      toast.error('Ocurrió un error al ejecutar la simulación');
     }
   };
 
@@ -142,6 +131,14 @@ export function Simulation() {
     setStatus('idle');
     setProgress(0);
     setSimulationData([]);
+    setMetrics({
+      totalLuggage: 0,
+      delivered: 0,
+      delayed: 0,
+      averageDeliveryTime: 0,
+      storageUtilization: 0,
+      flightUtilization: 0,
+    });
     toast.info('Simulación detenida');
   };
 
@@ -152,7 +149,6 @@ export function Simulation() {
         <p className="text-gray-600 mt-1">Configure y ejecute simulaciones para análisis de escenarios</p>
       </div>
 
-      {/* Configuration Panel */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -163,11 +159,10 @@ export function Simulation() {
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Simulation Type */}
             <div className="space-y-3">
               <Label>Tipo de Simulación</Label>
-              <Select 
-                value={simulationType} 
+              <Select
+                value={simulationType}
                 onValueChange={(value: SimulationType) => setSimulationType(value)}
                 disabled={status === 'running'}
               >
@@ -175,47 +170,30 @@ export function Simulation() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="realtime">
-                    <div>
-                      <div className="font-semibold">Operaciones en Tiempo Real</div>
-                      <div className="text-xs text-gray-500">Simulación día a día</div>
-                    </div>
-                  </SelectItem>
-                  <SelectItem value="period">
-                    <div>
-                      <div className="font-semibold">Simulación de Período</div>
-                      <div className="text-xs text-gray-500">Semanal, 5 días o 3 días (30-90 min)</div>
-                    </div>
-                  </SelectItem>
-                  <SelectItem value="collapse">
-                    <div>
-                      <div className="font-semibold">Simulación hasta Colapso</div>
-                      <div className="text-xs text-gray-500">Prueba de límites del sistema</div>
-                    </div>
-                  </SelectItem>
+                  <SelectItem value="realtime">Operaciones en Tiempo Real</SelectItem>
+                  <SelectItem value="period">Simulación de Período</SelectItem>
+                  <SelectItem value="collapse">Simulación hasta Colapso</SelectItem>
                 </SelectContent>
               </Select>
 
-              {/* Description based on type */}
               <div className="text-sm text-gray-600 p-3 bg-gray-50 rounded">
                 {simulationType === 'realtime' && (
-                  <p>Simula operaciones diarias normales en tiempo real con eventos aleatorios.</p>
+                  <p>Este escenario todavía no está conectado a la lógica real.</p>
                 )}
                 {simulationType === 'period' && (
-                  <p>Simula un período específico (3, 5 o 7 días) con ejecución de 30-90 minutos. Ideal para análisis de rendimiento semanal.</p>
+                  <p>Este escenario sí usará vuelos, maletas y aeropuertos del mock para simular 3, 5 o 7 días.</p>
                 )}
                 {simulationType === 'collapse' && (
-                  <p>Incrementa progresivamente la carga hasta encontrar el punto de colapso del sistema. Identifica límites operacionales.</p>
+                  <p>Este escenario todavía no está conectado a la lógica real.</p>
                 )}
               </div>
             </div>
 
-            {/* Period Selection */}
             {simulationType === 'period' && (
               <div className="space-y-3">
                 <Label>Duración del Período (días)</Label>
-                <Select 
-                  value={periodDays} 
+                <Select
+                  value={periodDays}
                   onValueChange={setPeriodDays}
                   disabled={status === 'running'}
                 >
@@ -224,17 +202,24 @@ export function Simulation() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="3">3 días</SelectItem>
-                    <SelectItem value="5">5 días (recomendado)</SelectItem>
-                    <SelectItem value="7">7 días (semanal)</SelectItem>
+                    <SelectItem value="5">5 días</SelectItem>
+                    <SelectItem value="7">7 días</SelectItem>
                   </SelectContent>
                 </Select>
+
+                <div className="space-y-2">
+                  <Label>Fecha de inicio</Label>
+                  <Input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    disabled={status === 'running'}
+                  />
+                </div>
+
                 <div className="text-sm text-gray-600 p-3 bg-blue-50 rounded">
-                  <p className="font-semibold mb-1">Tiempo estimado de ejecución:</p>
-                  <p>
-                    {periodDays === '3' && '30-45 minutos'}
-                    {periodDays === '5' && '45-75 minutos'}
-                    {periodDays === '7' && '60-90 minutos'}
-                  </p>
+                  <p className="font-semibold mb-1">Escenario implementado:</p>
+                  <p>Simulación de período usando datos de maletas, vuelos y aeropuertos del proyecto.</p>
                 </div>
               </div>
             )}
@@ -243,24 +228,17 @@ export function Simulation() {
               <div className="space-y-3">
                 <Label>Parámetros de Colapso</Label>
                 <div className="space-y-2">
-                  <div>
-                    <Label className="text-xs text-gray-600">Incremento de Carga (%)</Label>
-                    <Input type="number" defaultValue="15" disabled={status === 'running'} />
-                  </div>
-                  <div>
-                    <Label className="text-xs text-gray-600">Intervalo (días simulados)</Label>
-                    <Input type="number" defaultValue="1" disabled={status === 'running'} />
-                  </div>
+                  <Input type="number" defaultValue="15" disabled />
+                  <Input type="number" defaultValue="1" disabled />
                 </div>
                 <div className="text-sm text-red-600 p-3 bg-red-50 rounded flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                  <p>Esta simulación puede tomar tiempo considerable y mostrar fallos del sistema.</p>
+                  <p>Esta parte aún no está implementada con lógica real.</p>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Control Buttons */}
           <div className="flex gap-3 pt-4 border-t">
             {status === 'idle' && (
               <Button onClick={handleStartSimulation} size="lg">
@@ -268,7 +246,7 @@ export function Simulation() {
                 Iniciar Simulación
               </Button>
             )}
-            
+
             {status === 'running' && (
               <>
                 <Button onClick={handlePauseSimulation} variant="outline" size="lg">
@@ -281,7 +259,7 @@ export function Simulation() {
                 </Button>
               </>
             )}
-            
+
             {status === 'paused' && (
               <>
                 <Button onClick={handleResumeSimulation} size="lg">
@@ -303,7 +281,6 @@ export function Simulation() {
             )}
           </div>
 
-          {/* Progress Bar */}
           {status !== 'idle' && (
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
@@ -321,10 +298,8 @@ export function Simulation() {
         </CardContent>
       </Card>
 
-      {/* Results */}
       {(status === 'running' || status === 'paused' || status === 'completed') && (
         <>
-          {/* Metrics */}
           {status === 'completed' && (
             <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
               <Card>
@@ -343,7 +318,7 @@ export function Simulation() {
                 <CardContent>
                   <div className="text-2xl text-green-600">{metrics.delivered}</div>
                   <p className="text-xs text-gray-500">
-                    {((metrics.delivered / metrics.totalLuggage) * 100).toFixed(1)}%
+                    {metrics.totalLuggage > 0 ? ((metrics.delivered / metrics.totalLuggage) * 100).toFixed(1) : 0}%
                   </p>
                 </CardContent>
               </Card>
@@ -355,7 +330,7 @@ export function Simulation() {
                 <CardContent>
                   <div className="text-2xl text-red-600">{metrics.delayed}</div>
                   <p className="text-xs text-gray-500">
-                    {((metrics.delayed / metrics.totalLuggage) * 100).toFixed(1)}%
+                    {metrics.totalLuggage > 0 ? ((metrics.delayed / metrics.totalLuggage) * 100).toFixed(1) : 0}%
                   </p>
                 </CardContent>
               </Card>
@@ -378,12 +353,6 @@ export function Simulation() {
                   <div className={`text-2xl ${metrics.storageUtilization > 90 ? 'text-red-600' : 'text-blue-600'}`}>
                     {metrics.storageUtilization}%
                   </div>
-                  {metrics.storageUtilization > 90 && (
-                    <div className="flex items-center gap-1 text-xs text-red-600 mt-1">
-                      <AlertTriangle className="w-3 h-3" />
-                      <span>Crítico</span>
-                    </div>
-                  )}
                 </CardContent>
               </Card>
 
@@ -395,18 +364,11 @@ export function Simulation() {
                   <div className={`text-2xl ${metrics.flightUtilization > 90 ? 'text-red-600' : 'text-green-600'}`}>
                     {metrics.flightUtilization}%
                   </div>
-                  {metrics.flightUtilization > 90 && (
-                    <div className="flex items-center gap-1 text-xs text-red-600 mt-1">
-                      <AlertTriangle className="w-3 h-3" />
-                      <span>Sobrecarga</span>
-                    </div>
-                  )}
                 </CardContent>
               </Card>
             </div>
           )}
 
-          {/* Charts */}
           {simulationData.length > 0 && (
             <>
               <Card>
@@ -425,6 +387,7 @@ export function Simulation() {
                       <Area type="monotone" dataKey="delivered" stackId="1" stroke="#10b981" fill="#10b981" name="Entregadas" />
                       <Area type="monotone" dataKey="delayed" stackId="1" stroke="#ef4444" fill="#ef4444" name="Retrasadas" />
                       <Area type="monotone" dataKey="inTransit" stackId="1" stroke="#3b82f6" fill="#3b82f6" name="En tránsito" />
+                      <Area type="monotone" dataKey="waiting" stackId="1" stroke="#f59e0b" fill="#f59e0b" name="En espera" />
                     </AreaChart>
                   </ResponsiveContainer>
                 </CardContent>
@@ -472,31 +435,6 @@ export function Simulation() {
                 </Card>
               </div>
             </>
-          )}
-
-          {/* Collapse Warning */}
-          {status === 'completed' && simulationType === 'collapse' && metrics.storageUtilization > 95 && (
-            <Card className="border-red-500 bg-red-50">
-              <CardHeader>
-                <CardTitle className="text-red-700 flex items-center gap-2">
-                  <AlertTriangle className="w-5 h-5" />
-                  Punto de Colapso Alcanzado
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="text-red-700">
-                <div className="space-y-2">
-                  <p>El sistema ha alcanzado su capacidad máxima:</p>
-                  <ul className="list-disc list-inside space-y-1 ml-4">
-                    <li>Almacenamiento: {metrics.storageUtilization}% utilizado</li>
-                    <li>Vuelos: {metrics.flightUtilization}% utilizados</li>
-                    <li>Tasa de retraso: {((metrics.delayed / metrics.totalLuggage) * 100).toFixed(1)}%</li>
-                  </ul>
-                  <p className="mt-4 font-semibold">
-                    Recomendaciones: Ampliar capacidad de almacenamiento y/o agregar más vuelos.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
           )}
         </>
       )}
