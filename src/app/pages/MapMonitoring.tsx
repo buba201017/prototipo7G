@@ -58,196 +58,6 @@ function formatBadgeDateTime(value: string) {
 
   return `${dd}/${mm}/${yyyy} - ${hh}:${mi}:${ss}`;
 }
-
-type CollapseLevel = 'normal' | 'tension' | 'critical' | 'collapsed';
-
-type CollapseSnapshot = {
-  timestamp: string;
-  airportStorage: Record<string, number>;
-  airportQueue: Record<string, number>;
-  airportUtilization: Record<string, number>;
-  flightStress: Record<string, number>;
-  totals: {
-    delivered: number;
-    delayed: number;
-    waiting: number;
-    inTransit: number;
-  };
-  collapseScore: number;
-  collapseLevel: CollapseLevel;
-  collapsedAirports: string[];
-};
-
-function clamp(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function getCollapseLevel(score: number): CollapseLevel {
-  if (score >= 100) return 'collapsed';
-  if (score >= 85) return 'critical';
-  if (score >= 60) return 'tension';
-  return 'normal';
-}
-
-function buildCollapseTimeline(startDate: string, maxSteps = 28) {
-  const start = new Date(`${startDate}T00:00:00`);
-  const timeline: string[] = [];
-
-  for (let i = 0; i < maxSteps; i++) {
-    const point = new Date(start);
-    point.setHours(point.getHours() + i * 6);
-    timeline.push(point.toISOString());
-  }
-
-  return timeline;
-}
-
-function runCollapseSimulation(params: {
-  startDate: string;
-  demanda: number;
-  vuelos: number;
-  capacidad: number;
-  espera: number;
-  airportCapacities: Record<string, number>;
-}) {
-  const { startDate, demanda, vuelos, capacidad, espera, airportCapacities } = params;
-
-  const timeline = buildCollapseTimeline(startDate, 28);
-  const snapshots: CollapseSnapshot[] = [];
-
-  const baseStorage: Record<string, number> = {};
-  const baseQueue: Record<string, number> = {};
-
-  airports.forEach((airport, index) => {
-    const maxCap = airportCapacities[airport.id] ?? airport.storageCapacity;
-    baseStorage[airport.id] = Math.round(maxCap * (0.25 + (index % 4) * 0.07));
-    baseQueue[airport.id] = 5 + (index % 6) * 4;
-  });
-
-  let collapseDetectedAt: string | null = null;
-
-  for (let step = 0; step < timeline.length; step++) {
-    const progress = step / (timeline.length - 1);
-
-    const demandPressure = demanda / 100;
-    const flightsRelief = vuelos / 100;
-    const capacityRelief = capacidad / 100;
-    const waitPenalty = Math.max(0, (3 - espera) * 0.18);
-
-    const airportStorage: Record<string, number> = {};
-    const airportQueue: Record<string, number> = {};
-    const airportUtilization: Record<string, number> = {};
-    const flightStress: Record<string, number> = {};
-    const collapsedAirports: string[] = [];
-
-    airports.forEach((airport, index) => {
-      const maxCap = airportCapacities[airport.id] ?? airport.storageCapacity;
-
-      const regionalFactor = 0.95 + (index % 5) * 0.05;
-      const growth =
-        1 +
-        progress * 1.6 +
-        demandPressure * 0.9 -
-        flightsRelief * 0.45 -
-        capacityRelief * 0.35 +
-        waitPenalty;
-
-      const storage = Math.round(baseStorage[airport.id] + step * 18 * growth * regionalFactor);
-      const queue = Math.round(baseQueue[airport.id] + step * 8 * (growth + 0.2) * regionalFactor);
-
-      const boundedStorage = clamp(storage, 0, Math.round(maxCap * 1.5));
-      const boundedQueue = clamp(queue, 0, 9999);
-      const utilization = (boundedStorage / maxCap) * 100;
-
-      airportStorage[airport.id] = boundedStorage;
-      airportQueue[airport.id] = boundedQueue;
-      airportUtilization[airport.id] = utilization;
-
-      if (utilization >= 100 || boundedQueue >= 220) {
-        collapsedAirports.push(airport.id);
-      }
-    });
-
-    flights.slice(0, 18).forEach((flight, index) => {
-      const stress = clamp(
-        30 +
-          progress * 60 +
-          (demanda - 100) * 0.22 -
-          (vuelos - 100) * 0.18 -
-          (capacidad - 100) * 0.12 +
-          (index % 4) * 5,
-        0,
-        140
-      );
-
-      flightStress[flight.id] = stress;
-    });
-
-    const waiting = Object.values(airportQueue).reduce((acc, value) => acc + value, 0);
-
-    const avgUtilization =
-      Object.values(airportUtilization).reduce((acc, value) => acc + value, 0) /
-      Object.values(airportUtilization).length;
-
-    const avgFlightStress =
-      Object.values(flightStress).reduce((acc, value) => acc + value, 0) /
-      Object.values(flightStress).length;
-
-    const collapseScore = clamp(
-      avgUtilization * 0.55 + avgFlightStress * 0.25 + Math.min(waiting / 40, 100) * 0.2,
-      0,
-      130
-    );
-
-    const collapseLevel = getCollapseLevel(collapseScore);
-
-    const delivered = Math.max(
-      0,
-      Math.round(220 + step * 12 - progress * 180 * Math.max(0, demandPressure - flightsRelief * capacityRelief))
-    );
-
-    const delayed = Math.round(
-      20 + progress * 220 + Math.max(0, demanda - vuelos) * 0.7 + (100 - capacidad) * 0.45
-    );
-
-    const inTransit = Math.round(
-      260 + progress * 160 + (demanda - 100) * 1.2 - (vuelos - 100) * 0.6
-    );
-
-    if (!collapseDetectedAt && collapseLevel === 'collapsed') {
-      collapseDetectedAt = timeline[step];
-    }
-
-    snapshots.push({
-      timestamp: timeline[step],
-      airportStorage,
-      airportQueue,
-      airportUtilization,
-      flightStress,
-      totals: {
-        delivered,
-        delayed,
-        waiting,
-        inTransit,
-      },
-      collapseScore,
-      collapseLevel,
-      collapsedAirports,
-    });
-
-    if (collapseLevel === 'collapsed') {
-      break;
-    }
-  }
-
-  return {
-    snapshots,
-    timeline: timeline.slice(0, snapshots.length),
-    collapseDetectedAt,
-    finalSnapshot: snapshots[snapshots.length - 1] ?? null,
-  };
-}
-
 export function MapMonitoring() {
   const [selectedContinent, setSelectedContinent] = useState<string>('all');
   const [selectedLuggage, setSelectedLuggage] = useState<string | null>(null);
@@ -281,14 +91,6 @@ export function MapMonitoring() {
     waiting: number;
     inTransit: number;
   } | null>(null);
-  const [pendingSimulationResult, setPendingSimulationResult] = useState<{
-    status: string;
-    time: string;
-    delivered: number;
-    delayed: number;
-    waiting: number;
-    inTransit: number;
-  } | null>(null);
   const [simulationType, setSimulationType] = useState<'weekly' | 'collapse'>('weekly');
   const [simulationStartDate, setSimulationStartDate] = useState('2025-08-24');
   const [isSimulationMinimized, setIsSimulationMinimized] = useState(false);
@@ -297,69 +99,26 @@ export function MapMonitoring() {
   const [simulationTimeline, setSimulationTimeline] = useState<string[]>([]);
   const [simulationTimelineIndex, setSimulationTimelineIndex] = useState<number | null>(null);
   const [showSimulationLayers, setShowSimulationLayers] = useState(false);
-  const [collapseDetectedAt, setCollapseDetectedAt] = useState<string | null>(null);
-  const [isMapBlinking, setIsMapBlinking] = useState(false);
-  const [isSimulationRefreshing, setIsSimulationRefreshing] = useState(false);
-  const triggerMapBlink = () => {
-    setIsMapBlinking(true);
-    setShowSimulationLayers(false);
-
-    setTimeout(() => {
-      setShowSimulationLayers(true);
-    }, 220);
-
-    setTimeout(() => {
-      setIsMapBlinking(false);
-    }, 450);
-  };
   const handleStartSimulation = () => {
     setSimulationResult(null);
-    setPendingSimulationResult(null);
     setSimulationSnapshots([]);
     setSimulationTimeline([]);
     setSimulationTimelineIndex(null);
-    triggerMapBlink();
-    setIsSimulationRefreshing(true);
-    setTimeout(() => {
-      setIsSimulationRefreshing(false);
-    }, 900);
+    setShowSimulationLayers(true);
+
     try {
       if (simulationType === 'collapse') {
-  const result = runCollapseSimulation({
-    startDate: simulationStartDate,
-    demanda,
-    vuelos,
-    capacidad,
-    espera,
-    airportCapacities,
-  });
-
-  setSimulationSnapshots(result.snapshots);
-  setSimulationTimeline(result.timeline);
-  setSimulationTimelineIndex(0);
-  setIsSimulating(true);
-  setCollapseDetectedAt(result.collapseDetectedAt);
-
-  const finalSnapshot = result.finalSnapshot;
-
-  setPendingSimulationResult({
-    status:
-      finalSnapshot?.collapseLevel === 'collapsed'
-        ? 'Colapso detectado'
-        : finalSnapshot?.collapseLevel === 'critical'
-          ? 'Estado crítico'
-          : 'Finalizada',
-    time: result.collapseDetectedAt
-      ? formatBadgeDateTime(result.collapseDetectedAt)
-      : 'Sin colapso total',
-    delivered: finalSnapshot?.totals.delivered ?? 0,
-    delayed: finalSnapshot?.totals.delayed ?? 0,
-    waiting: finalSnapshot?.totals.waiting ?? 0,
-    inTransit: finalSnapshot?.totals.inTransit ?? 0,
-  });
-
-  return;
-}
+        setIsSimulating(false);
+        setSimulationResult({
+          status: 'No implementada',
+          time: 'Pendiente',
+          delivered: 0,
+          delayed: 0,
+          waiting: 0,
+          inTransit: 0,
+        });
+        return;
+      }
 
       const selectedDays = Number(simulationPeriodDays) as SimulationPeriod;
 
@@ -375,7 +134,7 @@ export function MapMonitoring() {
       setSimulationTimelineIndex(0);
       setIsSimulating(true);
 
-      setPendingSimulationResult({
+      setSimulationResult({
         status: 'Finalizada',
         time: `${simulationPeriodDays} días / ${Number(simulationPeriodDays) * 24} horas`,
         delivered: result.totalDelivered,
@@ -403,11 +162,6 @@ export function MapMonitoring() {
 
     if (simulationTimelineIndex >= simulationTimeline.length - 1) {
       setIsSimulating(false);
-
-      if (pendingSimulationResult) {
-        setSimulationResult(pendingSimulationResult);
-      }
-
       return;
     }
 
@@ -416,7 +170,7 @@ export function MapMonitoring() {
     }, 800);
 
     return () => clearTimeout(timer);
-  }, [isSimulating, simulationTimelineIndex, simulationTimeline.length, pendingSimulationResult]);
+  }, [isSimulating, simulationTimelineIndex, simulationTimeline.length]);
   // Custom Pan/Zoom state hooks
   const [transform, setTransform] = useState({ x: 0, y: -256, k: 1 });
   const [isDragging, setIsDragging] = useState(false);
@@ -452,17 +206,12 @@ export function MapMonitoring() {
 
   const activeLuggage = luggageData.filter(l => l.status === 'in-transit' || l.status === 'registered');
   const currentSimulationDayIndex =
-  simulationTimelineIndex === null
-    ? null
-    : simulationType === 'collapse'
-      ? Math.min(
-          simulationSnapshots.length > 0 ? simulationSnapshots.length - 1 : 0,
-          simulationTimelineIndex
-        )
+    simulationTimelineIndex === null
+      ? null
       : Math.min(
-          simulationSnapshots.length > 0 ? simulationSnapshots.length - 1 : 0,
-          Math.floor(simulationTimelineIndex / 4)
-        );
+        simulationSnapshots.length > 0 ? simulationSnapshots.length - 1 : 0,
+        Math.floor(simulationTimelineIndex / 4)
+      );
 
   const currentSimulationSnapshot =
     currentSimulationDayIndex !== null && simulationSnapshots.length > 0
@@ -474,14 +223,8 @@ export function MapMonitoring() {
       ? formatBadgeDateTime(simulationTimeline[simulationTimelineIndex])
       : '24/08/2025 - 00:00:00';
 
-  const currentCollapseSnapshot = currentSimulationSnapshot as CollapseSnapshot | null;
-
-const simulationPeriodText =
-  simulationType === 'collapse'
-    ? currentCollapseSnapshot
-      ? `Colapso: ${currentCollapseSnapshot.collapseLevel.toUpperCase()}`
-      : 'Simulación hasta el colapso'
-    : simulationPeriodDays === '7'
+  const simulationPeriodText =
+    simulationPeriodDays === '7'
       ? 'Simulación semanal'
       : `Simulación de ${simulationPeriodDays} días`;
   // Map dimensions reference
@@ -505,20 +248,12 @@ const simulationPeriodText =
   );
 
   return (
-    <div
-      className={`relative w-full h-[calc(100vh-2rem)] min-h-[600px] bg-[#dcf1fb] overflow-hidden rounded-xl border border-gray-200 flex shadow-sm transition-all duration-300 ${isSimulationRefreshing ? 'ring-4 ring-blue-300/60' : ''
-        }`}
-    >
-      {isSimulationRefreshing && (
-        <div className="absolute inset-0 z-10 pointer-events-none animate-simulation-flash bg-white/40" />
-      )}
+    <div className="relative w-full h-[calc(100vh-2rem)] min-h-[600px] bg-[#dcf1fb] overflow-hidden rounded-xl border border-gray-200 flex shadow-sm">
       {/* ── MAP CONTAINER ── */}
       <svg
         viewBox={`0 0 ${mapW} ${mapH}`}
         preserveAspectRatio="xMidYMid slice"
-        className={`absolute inset-0 w-full h-full transition-opacity duration-200 ${isMapBlinking ? 'opacity-45' : 'opacity-100'
-          }`}
-
+        className="absolute inset-0 w-full h-full"
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -627,19 +362,15 @@ const simulationPeriodText =
           {showSimulationLayers && filteredAirports.map((airport) => {
             const { x, y } = getMapCoordinates(airport.coordinates.lat, airport.coordinates.lng);
             const currentStorage = currentSimulationSnapshot?.airportStorage?.[airport.id] ?? airport.currentStorage;
-            const maxCapacity = airportCapacities[airport.id] ?? airport.storageCapacity;
-            const queueCount = currentSimulationSnapshot?.airportQueue?.[airport.id] ?? 0;
-            const utilizationPct = (currentStorage / maxCapacity) * 100;
+            const utilizationPct = (currentStorage / airport.storageCapacity) * 100;
             const hasActive = utilizationPct >= 50;
 
             const color =
-  utilizationPct >= 100 || queueCount >= 220
-    ? '#991b1b'
-    : utilizationPct >= 95 || queueCount >= 140
-      ? '#ef4444'
-      : utilizationPct >= 50 || queueCount >= 60
-        ? '#f59e0b'
-        : '#22c55e';
+              utilizationPct >= 95
+                ? '#ef4444'   // rojo
+                : utilizationPct >= 50
+                  ? '#f59e0b' // ámbar
+                  : '#22c55e'; // verde
 
             return (
               <g key={airport.id} style={{ cursor: 'pointer' }}
@@ -698,10 +429,7 @@ const simulationPeriodText =
         {/* Left Elements: Date & Controls */}
         <div className="flex flex-col gap-4 pointer-events-none">
           {/* Top-Left Date Badge */}
-          <div
-            className={`bg-[#0275d8] text-white px-4 py-2 rounded-md shadow-md max-w-max pointer-events-auto transition-all duration-500 ${isSimulationRefreshing ? 'scale-105 animate-pulse shadow-xl' : ''
-              }`}
-          >
+          <div className="bg-[#0275d8] text-white px-4 py-2 rounded-md shadow-md max-w-max pointer-events-auto">
             {simulationResult ? (
               <>
                 <div className="text-sm font-semibold">{displayedDateTime}</div>
@@ -768,10 +496,7 @@ const simulationPeriodText =
             <div className="w-[360px] pointer-events-auto flex flex-col max-h-full overflow-y-auto hide-scrollbar">
 
               {activePanel === 'simulacion' && (
-                <Card
-                  className={`shadow-2xl border-0 bg-white/95 backdrop-blur-md flex flex-col shrink-0 transition-all duration-500 ${isSimulationRefreshing ? 'scale-[1.015] border-blue-200 bg-blue-50/60' : ''
-                    }`}
-                >
+                <Card className="shadow-2xl border-0 bg-white/95 backdrop-blur-md flex flex-col shrink-0">
                   <CardHeader className="pb-3 border-b border-gray-100">
                     <div className="flex items-center justify-between">
                       <CardTitle className="text-xl text-gray-800 flex items-center gap-2">
@@ -909,40 +634,6 @@ const simulationPeriodText =
                                 {simulationResult.inTransit.toLocaleString()}
                               </span>
                             </div>
-                            {simulationType === 'collapse' && currentCollapseSnapshot && (
-  <>
-    <div className="flex justify-between items-center text-sm">
-      <span className="text-gray-600">Nivel:</span>
-      <span
-        className={`font-semibold ${
-          currentCollapseSnapshot.collapseLevel === 'collapsed'
-            ? 'text-red-900'
-            : currentCollapseSnapshot.collapseLevel === 'critical'
-              ? 'text-red-600'
-              : currentCollapseSnapshot.collapseLevel === 'tension'
-                ? 'text-amber-600'
-                : 'text-green-600'
-        }`}
-      >
-        {currentCollapseSnapshot.collapseLevel}
-      </span>
-    </div>
-
-    <div className="flex justify-between items-center text-sm">
-      <span className="text-gray-600">Score de colapso:</span>
-      <span className="font-semibold text-gray-800">
-        {currentCollapseSnapshot.collapseScore.toFixed(1)}%
-      </span>
-    </div>
-
-    <div className="flex justify-between items-center text-sm">
-      <span className="text-gray-600">Aeropuertos colapsados:</span>
-      <span className="font-semibold text-red-600">
-        {currentCollapseSnapshot.collapsedAirports.length}
-      </span>
-    </div>
-  </>
-)}
                           </div>
                         </div>
                       )}
@@ -1185,8 +876,7 @@ const simulationPeriodText =
                     <div className="space-y-2.5">
                       {filteredAirports.map(airport => {
                         const currentStorage = currentSimulationSnapshot?.airportStorage?.[airport.id] ?? airport.currentStorage;
-                        const maxCapacity = airportCapacities[airport.id] ?? airport.storageCapacity;
-const pct = (currentStorage / maxCapacity) * 100;
+                        const pct = (currentStorage / airport.storageCapacity) * 100;
                         const activeLuggageCount = activeLuggage.filter(
                           l => l.currentLocationId === airport.id
                         ).length;
@@ -1214,7 +904,7 @@ const pct = (currentStorage / maxCapacity) * 100;
                                 />
                               </div>
                               <div className="text-gray-400 mt-1" style={{ fontSize: '10px' }}>
-                                {currentStorage} / {maxCapacity}
+                                {currentStorage} / {airport.storageCapacity}
                               </div>
                             </div>
 
@@ -1300,21 +990,6 @@ const pct = (currentStorage / maxCapacity) * 100;
         .hide-scrollbar:hover::-webkit-scrollbar-thumb {
           background-color: rgba(156, 163, 175, 0.8);
         }
-          @keyframes simulationFlash {
-  0% {
-    opacity: 0;
-  }
-  20% {
-    opacity: 0.45;
-  }
-  100% {
-    opacity: 0;
-  }
-}
-
-.animate-simulation-flash {
-  animation: simulationFlash 0.9s ease-out;
-}
       `}</style>
     </div>
   );
