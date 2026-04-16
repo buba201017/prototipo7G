@@ -1,10 +1,24 @@
 import { useState } from 'react';
-import { Outlet, Link, useLocation } from 'react-router';
-import { MapPin, Plane, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Outlet, NavLink, useLocation } from 'react-router';
+import {
+  LayoutDashboard,
+  Package,
+  Route,
+  MapPin,
+  PlayCircle,
+  FileBarChart,
+  Plane,
+  ChevronLeft,
+  ChevronRight,
+} from 'lucide-react';
 import { cn } from './ui/utils';
 
 const navigation = [
   { name: 'Monitoreo en Mapa', path: '/', icon: MapPin, description: 'Vista global' },
+  { name: 'Operación día a día', path: '/operacion-dia-a-dia', icon: Plane, description: 'Tiempo real' },
+  { name: 'Registro de Maletas', path: '/registro-maletas', icon: Package, description: 'Registrar envíos' },
+  { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard, description: 'Panel principal' },
+  { name: 'Reportes', path: '/reportes', icon: FileBarChart, description: 'Análisis' },
 ];
 
 export function Layout() {
@@ -56,18 +70,20 @@ export function Layout() {
             const Icon = item.icon;
 
             return (
-              <Link
-                key={item.path}
-                to={item.path}
-                title={collapsed ? item.name : undefined}
-                className={cn(
-                  "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-150 group relative",
-                  isActive
-                    ? "bg-blue-600 text-white shadow-lg"
-                    : "text-blue-200 hover:bg-blue-800 hover:text-white",
-                  collapsed && "justify-center px-2"
-                )}
-              >
+              <NavLink
+  key={item.path}
+  to={item.path}
+  title={collapsed ? item.name : undefined}
+  className={({ isActive }) =>
+    cn(
+      "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-150 group relative",
+      isActive
+        ? "bg-blue-600 text-white shadow-lg"
+        : "text-blue-200 hover:bg-blue-800 hover:text-white",
+      collapsed && "justify-center px-2"
+    )
+  }
+>
                 <Icon className={cn("shrink-0", collapsed ? "w-5 h-5" : "w-4 h-4")} />
                 {!collapsed && (
                   <div className="overflow-hidden">
@@ -89,7 +105,7 @@ export function Layout() {
                     {item.name}
                   </div>
                 )}
-              </Link>
+              </NavLink>
             );
           })}
         </nav>
